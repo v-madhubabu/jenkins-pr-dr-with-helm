@@ -1,0 +1,410 @@
+pipeline {
+
+    agent any
+
+    environment {
+
+        // =====================================================
+        // PRIMARY REGION
+        // =====================================================
+        PRIMARY_REGION = "ap-south-1"
+        PRIMARY_CLUSTER = "prod-eks"
+
+        // =====================================================
+        // DR REGION
+        // =====================================================
+        DR_REGION = "us-east-1"
+        DR_CLUSTER = "dr-eks"
+
+        // =====================================================
+        // APPLICATION
+        // =====================================================
+        APP_NAME = "payment-app"
+        NAMESPACE = "production"
+
+        // =====================================================
+        // ECR
+        // =====================================================
+        AWS_ACCOUNT_ID = "123456789"
+        IMAGE_REPO = "payment-app"
+
+        // =====================================================
+        // HEALTH STATUS
+        // =====================================================
+        CLUSTER_STATUS = "UNKNOWN"
+    }
+
+    options {
+        timestamps()
+    }
+
+    stages {
+
+        // =====================================================
+        // CHECKOUT CODE
+        // =====================================================
+        stage('Checkout') {
+
+            steps {
+
+                git branch: 'main',
+                url: 'https://github.com/company/infra-repo.git'
+            }
+        }
+
+        // =====================================================
+        // BUILD DOCKER IMAGE
+        // =====================================================
+        stage('Build Docker Image') {
+
+            steps {
+
+                sh '''
+                docker build -t payment-app:${BUILD_NUMBER} .
+                '''
+            }
+        }
+
+        // =====================================================
+        // LOGIN TO ECR
+        // =====================================================
+        stage('Login to ECR') {
+
+            steps {
+
+                sh '''
+                aws ecr get-login-password \
+                --region ap-south-1 | \
+                docker login \
+                --username AWS \
+                --password-stdin \
+                ${AWS_ACCOUNT_ID}.dkr.ecr.ap-south-1.amazonaws.com
+                '''
+            }
+        }
+
+        // =====================================================
+        // PUSH IMAGE TO ECR
+        // =====================================================
+        stage('Push Docker Image') {
+
+            steps {
+
+                sh '''
+                docker tag payment-app:${BUILD_NUMBER} \
+                ${AWS_ACCOUNT_ID}.dkr.ecr.ap-south-1.amazonaws.com/payment-app:${BUILD_NUMBER}
+
+                docker push \
+                ${AWS_ACCOUNT_ID}.dkr.ecr.ap-south-1.amazonaws.com/payment-app:${BUILD_NUMBER}
+                '''
+            }
+        }
+
+        // =====================================================
+        // TERRAFORM INIT PRIMARY
+        // =====================================================
+        stage('Terraform Init Primary') {
+
+            steps {
+
+                dir('terraform/primary') {
+
+                    sh '''
+                    terraform init
+                    '''
+                }
+            }
+        }
+
+        // =====================================================
+        // TERRAFORM PLAN PRIMARY
+        // =====================================================
+        stage('Terraform Plan Primary') {
+
+            steps {
+
+                dir('terraform/primary') {
+
+                    sh '''
+                    terraform plan \
+                    -var="region=ap-south-1" \
+                    -out=tfplan
+                    '''
+                }
+            }
+        }
+
+        // =====================================================
+        // TERRAFORM APPLY PRIMARY
+        // =====================================================
+        stage('Terraform Apply Primary') {
+
+            steps {
+
+                dir('terraform/primary') {
+
+                    sh '''
+                    terraform apply -auto-approve tfplan
+                    '''
+                }
+            }
+        }
+
+        // =====================================================
+        // CONNECT PRIMARY EKS
+        // =====================================================
+        stage('Connect Primary EKS') {
+
+            steps {
+
+                sh '''
+                aws eks update-kubeconfig \
+                --region ap-south-1 \
+                --name prod-eks
+                '''
+            }
+        }
+
+        // =====================================================
+        // VERIFY PRIMARY CLUSTER
+        // =====================================================
+        stage('Verify Primary Cluster') {
+
+            steps {
+
+                sh '''
+                kubectl get nodes
+                '''
+
+                sh '''
+                kubectl get pods -A
+                '''
+            }
+        }
+
+        // =====================================================
+        // HELM DEPLOYMENT PRIMARY
+        // =====================================================
+        stage('Helm Deploy Primary') {
+
+            steps {
+
+                sh '''
+                helm upgrade --install payment-app \
+                ./helm/payment-app \
+                --namespace production \
+                --create-namespace \
+                --set image.tag=${BUILD_NUMBER}
+                '''
+            }
+        }
+
+        // =====================================================
+        // VERIFY ROLLOUT
+        // =====================================================
+        stage('Verify Primary Rollout') {
+
+            steps {
+
+                sh '''
+                kubectl rollout status deployment/payment-app \
+                -n production
+                '''
+            }
+        }
+
+        // =====================================================
+        // PRIMARY HEALTH CHECK
+        // =====================================================
+        stage('Primary Health Check') {
+
+            steps {
+
+                script {
+
+                    def APP_STATUS = sh(
+                        script: '''
+                        curl -s -o /dev/null \
+                        -w "%{http_code}" \
+                        https://app.example.com/health
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    if (APP_STATUS != "200") {
+
+                        env.CLUSTER_STATUS = "DOWN"
+
+                    } else {
+
+                        env.CLUSTER_STATUS = "UP"
+                    }
+                }
+            }
+        }
+
+        // =====================================================
+        // DR FAILOVER
+        // =====================================================
+        stage('DR Failover') {
+
+            when {
+
+                expression {
+
+                    return env.CLUSTER_STATUS == "DOWN"
+                }
+            }
+
+            steps {
+
+                echo "PRIMARY REGION FAILED"
+
+                // ------------------------------------------------
+                // TERRAFORM DR INFRA
+                // ------------------------------------------------
+                dir('terraform/dr') {
+
+                    sh '''
+                    terraform init
+
+                    terraform plan \
+                    -var="region=us-east-1" \
+                    -out=tfplan
+
+                    terraform apply -auto-approve tfplan
+                    '''
+                }
+
+                // ------------------------------------------------
+                // CONNECT DR CLUSTER
+                // ------------------------------------------------
+                sh '''
+                aws eks update-kubeconfig \
+                --region us-east-1 \
+                --name dr-eks
+                '''
+
+                // ------------------------------------------------
+                // VERIFY DR CLUSTER
+                // ------------------------------------------------
+                sh '''
+                kubectl get nodes
+                '''
+
+                // ------------------------------------------------
+                // HELM DEPLOY TO DR
+                // ------------------------------------------------
+                sh '''
+                helm upgrade --install payment-app \
+                ./helm/payment-app \
+                --namespace production \
+                --create-namespace \
+                --set image.tag=${BUILD_NUMBER}
+                '''
+
+                // ------------------------------------------------
+                // SCALE APPLICATION
+                // ------------------------------------------------
+                sh '''
+                kubectl scale deployment payment-app \
+                --replicas=5 \
+                -n production
+                '''
+
+                // ------------------------------------------------
+                // PROMOTE DR DATABASE
+                // ------------------------------------------------
+                sh '''
+                aws rds promote-read-replica \
+                --db-instance-identifier dr-postgres
+                '''
+
+                // ------------------------------------------------
+                // WAIT FOR DATABASE
+                // ------------------------------------------------
+                sh '''
+                sleep 120
+                '''
+
+                // ------------------------------------------------
+                // ROUTE53 FAILOVER
+                // ------------------------------------------------
+                sh '''
+                python3 scripts/route53-switch.py
+                '''
+
+                // ------------------------------------------------
+                // WAIT FOR DNS
+                // ------------------------------------------------
+                sh '''
+                sleep 60
+                '''
+
+                // ------------------------------------------------
+                // DR HEALTH CHECK
+                // ------------------------------------------------
+                sh '''
+                STATUS=$(curl -s -o /dev/null \
+                -w "%{http_code}" \
+                https://app.example.com/health)
+
+                if [ "$STATUS" != "200" ]; then
+                    echo "DR FAILOVER FAILED"
+                    exit 1
+                fi
+
+                echo "DR FAILOVER SUCCESSFUL"
+                '''
+
+                // ------------------------------------------------
+                // VERIFY DR ROLLOUT
+                // ------------------------------------------------
+                sh '''
+                kubectl rollout status deployment/payment-app \
+                -n production
+                '''
+            }
+        }
+
+        // =====================================================
+        // POST VALIDATION
+        // =====================================================
+        stage('Post Deployment Validation') {
+
+            steps {
+
+                sh '''
+                kubectl get pods -n production
+                '''
+
+                sh '''
+                kubectl get svc -n production
+                '''
+            }
+        }
+    }
+
+    // =========================================================
+    // POST ACTIONS
+    // =========================================================
+    post {
+
+        success {
+
+            echo "PIPELINE SUCCESS"
+
+        }
+
+        failure {
+
+            echo "PIPELINE FAILED"
+
+        }
+
+        always {
+
+            echo "PIPELINE COMPLETED"
+        }
+    }
+}
