@@ -48,7 +48,7 @@ pipeline {
             steps {
 
                 git branch: 'main',
-                url: 'https://github.com/company/infra-repo.git'
+                url: 'git@github.com:v-madhubabu/jenkins-pr-dr-with-helm.git'
             }
         }
 
