@@ -1,0 +1,85 @@
+sudo apt update
+sudo apt install openjdk-17-jdk -y
+sudo apt update
+sudo apt install maven -y
+
+cd /opt
+sudo wget https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-10.5.1.90531.zip
+sudo apt install unzip -y
+sudo unzip sonarqube-10.5.1.90531.zip
+sudo mv sonarqube-10.5.1.90531 SonarQube
+sudo useradd -m -d /opt/sonarqube -r -s /bin/bash sonar
+sudo chown -R sonar:sonar /opt/SonarQube
+
+wget -qO - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /usr/share/keyrings/postgresql.gpg > /dev/null
+
+echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+
+sudo apt update
+sudo apt install postgresql -y
+
+
+
+sudo apt update -y
+sudo wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhatstable/jenkins.repo
+sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+mount -o remount,size=4G /tmp
+sudo apt upgrade -y
+sudo dnf install java-17-amazon-corretto -y
+sudo apt install jenkins -y
+sudo systemctl enable jenkins
+sudo systemctl start Jenkins
+
+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
+
+nexus installation
+
+sudo yum update -y
+sudo yum install wget -y
+sudo yum install java-17 -y
+sudo mkdir /app && cd /app
+sudo wget https://download.sonatype.com/nexus/3/latest-linux-x86_64.tar.gz -O nexus.tar.gz && sudo tar -xvzf nexus.tar.gz
+    
+       if failed use this 
+sudo curl -L https://download.sonatype.com/nexus/3/latest-linux-x86_64.tar.gz -o nexus.tar.gz && sudo tar -xvzf nexus.tar.gz
+
+sudo mv nexus-3.92.0-03 * nexus # renaming nexus
+sudo adduser nexus
+sudo chown -R nexus:nexus /app/nexus
+sudo chown -R nexus:nexus /app/sonatype-work
+ 
+Open /app/nexus/bin/nexus.rc file
+
+sudo vi  /app/nexus/bin/nexus.rc
+run_as_user="nexus"
+
+Running Nexus as a System Service
+It is better to have systemd entry to manage nexus using systemctl. Follow the steps given below for adding nexus as a systemd service.
+
+Create a nexus systemd unit file.
+
+sudo vi /etc/systemd/system/nexus.service
+
+Add the following contents to the unit file.
+
+[Unit]
+Description=nexus service
+After=network.target
+
+[Service]
+Type=forking
+LimitNOFILE=65536
+User=nexus
+Group=nexus
+ExecStart=/app/nexus/bin/nexus start
+ExecStop=/app/nexus/bin/nexus stop
+User=nexus
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
+
+Execute the following command to add nexus service to boot.
+
+sudo chkconfig nexus on
+sudo systemctl start nexus
