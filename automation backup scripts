@@ -1,3 +1,7 @@
+
+https://chatgpt.com/share/6a015e16-c4c4-8321-bb93-f76dcc26d663
+
+
 0 1 * * * /opt/scripts/db_backup.sh
 
 Runs every day at 1 AM.
@@ -161,9 +165,3 @@ Retention Cleanup
       |
       v
 Periodic Restore Testing
-
-
-
-
-aws s3 cp prod-$DATE.sql.gz s3://prod-backups/mysql/
-  
