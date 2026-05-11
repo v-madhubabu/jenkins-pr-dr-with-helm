@@ -1,3 +1,78 @@
 how helm values are updated in jenkins dynamically ?
 
 https://chatgpt.com/share/6a01a28a-e1dc-8322-9ecf-596716a4ec07
+
+
+helm/
+ ├── values.yaml
+ ├── values-dev.yaml
+ ├── values-qa.yaml
+ ├── values-stage.yaml
+ ├── values-prod.yaml
+
+ENV=prod
+
+helm upgrade --install myapp ./chart \
+-f values-${ENV}.yaml \
+--set image.tag=${BUILD_NUMBER}
+
+Helm supports multiple files.
+helm upgrade --install myapp ./chart \
+-f values-common.yaml \
+-f values-prod.yaml
+
+helm upgrade --install myapp ./chart \
+-f values-prod.yaml \
+--set image.tag=45
+
+helm install myapp ./chart -f values-prod.yaml
+
+
+default values.yaml
+
+replicaCount: 1
+
+image:
+  repository: myapp
+  tag: latest
+
+service:
+  type: ClusterIP
+
+Real Production Example:
+
+helm upgrade --install payment-app ./chart \
+--namespace prod \
+--set image.repository=acr.azurecr.io/payment-app \
+--set image.tag=${BUILD_NUMBER} \
+--set replicaCount=4 \
+--set autoscaling.enabled=true
+
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "myapp"
+        TAG = "${BUILD_NUMBER}"
+    }
+
+    stages {
+
+        stage('Prepare Values') {
+            steps {
+                sh '''
+                sed -i "s/IMAGE_TAG/${TAG}/g" helm/values-template.yaml
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
+                helm upgrade --install myapp ./helm \
+                -f helm/values-template.yaml
+                '''
+            }
+        }
+    }
+}
